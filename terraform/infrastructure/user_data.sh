@@ -9,6 +9,11 @@ echo "Starting user data script..."
 # Update system
 dnf update -y
 
+# Install and start SSM agent (required for SSM Session Manager access)
+dnf install -y amazon-ssm-agent
+systemctl enable amazon-ssm-agent
+systemctl start amazon-ssm-agent
+
 # Install Docker
 dnf install -y docker
 systemctl start docker
