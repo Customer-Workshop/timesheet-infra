@@ -31,13 +31,19 @@ Before setting up the CD pipeline, you need:
 
 1. **AWS Account** with appropriate permissions
 2. **GitHub repository access** to both this repo and the application repo
-3. **SSH key pair** for EC2 access
 
 ## Initial Setup Instructions
 
 ### Step 1: Bootstrap AWS Infrastructure
 
-The bootstrap step creates the S3 bucket for Terraform state, DynamoDB table for state locking, and ECR repository. This only needs to be done once.
+The bootstrap step creates:
+- S3 bucket for Terraform state
+- DynamoDB table for state locking
+- ECR repository for Docker images
+- GitHub Actions OIDC provider for secure credential-less deployments
+- IAM role with least privilege permissions for GitHub Actions
+
+This is a **separate destroyable stack** that can be torn down independently.
 
 ```bash
 cd terraform/bootstrap
@@ -50,38 +56,33 @@ terraform plan
 
 # Apply the bootstrap infrastructure
 terraform apply
+
+# To destroy bootstrap resources (when no longer needed):
+# terraform destroy
 ```
 
 Save the outputs - you'll need them for the next steps:
 - `terraform_state_bucket` - S3 bucket name for Terraform state
 - `ecr_repository_url` - ECR repository URL for Docker images
+- `ecr_repository_arn` - ECR repository ARN for IAM policies
+- `github_actions_role_arn` - IAM role ARN for GitHub Actions OIDC
 
-### Step 2: Generate SSH Key Pair
-
-Generate an SSH key pair for EC2 access:
-
-```bash
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/client-timesheet-deployer -N ""
-```
-
-This creates:
-- `~/.ssh/client-timesheet-deployer` - Private key (keep secure!)
-- `~/.ssh/client-timesheet-deployer.pub` - Public key
-
-### Step 3: Configure GitHub Secrets
+### Step 2: Configure GitHub Secrets
 
 In your GitHub repository settings, add the following secrets:
 
 | Secret Name | Description | How to Get |
 |-------------|-------------|------------|
-| `AWS_ACCESS_KEY_ID` | AWS access key for deployments | Create IAM user with EC2, ECR, S3 permissions |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key | Same IAM user |
-| `EC2_SSH_PRIVATE_KEY` | Private SSH key for EC2 access | Contents of `~/.ssh/client-timesheet-deployer` |
-| `EC2_SSH_PUBLIC_KEY` | Public SSH key | Contents of `~/.ssh/client-timesheet-deployer.pub` |
-| `ECR_REPOSITORY_URL` | ECR repository URL | From bootstrap output |
+| `AWS_ROLE_ARN` | IAM role ARN for OIDC authentication | From bootstrap output `github_actions_role_arn` |
+| `ECR_REPOSITORY_URL` | ECR repository URL | From bootstrap output `ecr_repository_url` |
+| `ECR_REPOSITORY_ARN` | ECR repository ARN | From bootstrap output (for Terraform) |
 | `GH_PAT` | GitHub Personal Access Token | Create PAT with `repo` scope to access the app repo |
 
-### Step 4: Deploy Infrastructure
+**Note:** No AWS access keys or SSH keys needed! The workflow uses:
+- **OIDC** for secure, credential-less AWS authentication
+- **SSM Session Manager** for EC2 access (no SSH ports open)
+
+### Step 3: Deploy Infrastructure
 
 After configuring secrets, deploy the main infrastructure:
 
@@ -92,8 +93,8 @@ cd terraform/infrastructure
 terraform init
 
 # Set required variables
-export TF_VAR_ssh_public_key="$(cat ~/.ssh/client-timesheet-deployer.pub)"
 export TF_VAR_ecr_repository_url="<ECR_REPOSITORY_URL_FROM_BOOTSTRAP>"
+export TF_VAR_ecr_repository_arn="<ECR_REPOSITORY_ARN_FROM_BOOTSTRAP>"
 
 # Review the plan
 terraform plan
@@ -102,7 +103,7 @@ terraform plan
 terraform apply
 ```
 
-### Step 5: Trigger First Deployment
+### Step 4: Trigger First Deployment
 
 Once the infrastructure is deployed:
 
@@ -112,8 +113,8 @@ Once the infrastructure is deployed:
 The workflow will:
 1. Build the Docker image with the application
 2. Push to ECR
-3. SSH into the EC2 instance
-4. Pull and run the new container
+3. Deploy via SSM Run Command (no SSH needed)
+4. Run health check to verify deployment
 
 ## Directory Structure
 
@@ -149,8 +150,13 @@ The GitHub Actions workflow (`deploy.yml`) runs on:
 
 Pipeline stages:
 1. **Build and Push**: Builds Docker image and pushes to ECR
-2. **Deploy**: SSHs into EC2 and runs the deployment script
+2. **Deploy**: Deploys via SSM Run Command (no SSH needed)
 3. **Health Check**: Verifies the application is running
+
+Security features:
+- **OIDC Authentication**: No static AWS credentials stored in GitHub
+- **SSM Session Manager**: No SSH ports open, IAM-based access control
+- **Least Privilege IAM**: Deployment role has minimal required permissions
 
 ## Accessing the Application
 
@@ -167,29 +173,48 @@ terraform output instance_public_ip
 
 ## Troubleshooting
 
+### Access EC2 via SSM Session Manager
+
+Use AWS Systems Manager Session Manager to access the EC2 instance (no SSH needed):
+
+```bash
+# Get instance ID
+INSTANCE_ID=$(aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=client-timesheet-app" "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' \
+  --output text)
+
+# Start SSM session
+aws ssm start-session --target $INSTANCE_ID
+```
+
+Or use the AWS Console: EC2 > Instances > Select instance > Connect > Session Manager
+
 ### Check EC2 Logs
 ```bash
-ssh -i ~/.ssh/client-timesheet-deployer ec2-user@<ELASTIC_IP>
+# Via SSM session:
 sudo cat /var/log/user-data.log
 docker logs client-timesheet-app
 ```
 
 ### Manual Deployment
 ```bash
-ssh -i ~/.ssh/client-timesheet-deployer ec2-user@<ELASTIC_IP>
+# Via SSM session:
 sudo /opt/app/deploy.sh
 ```
 
 ### Check Container Status
 ```bash
-ssh -i ~/.ssh/client-timesheet-deployer ec2-user@<ELASTIC_IP>
+# Via SSM session:
 docker ps
 docker logs client-timesheet-app
 ```
 
 ## Security Considerations
 
-- SSH access is open to all IPs (0.0.0.0/0) - consider restricting to your IP range
+- **No SSH access**: Uses SSM Session Manager with IAM-based authentication and audit logging
+- **OIDC Authentication**: GitHub Actions uses OIDC - no static AWS credentials stored
+- **Least Privilege IAM**: Deployment role has minimal required permissions scoped to specific resources
 - The application uses email-only authentication - consider implementing proper auth for production
 - SQLite data is stored on EBS - consider regular backups
 - HTTPS is not configured - consider adding an Application Load Balancer with ACM certificate

@@ -15,18 +15,28 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-resource "aws_s3_bucket" "terraform_state" {
-  bucket = "client-timesheet-terraform-state-${data.aws_caller_identity.current.account_id}"
-
-  lifecycle {
-    prevent_destroy = true
-  }
-
+locals {
+  account_id = data.aws_caller_identity.current.account_id
   tags = {
-    Name        = "Terraform State Bucket"
     Environment = "shared"
     Project     = "client-timesheet-app"
+    ManagedBy   = "terraform-bootstrap"
   }
+}
+
+# =============================================================================
+# Terraform State Backend Resources
+# =============================================================================
+
+resource "aws_s3_bucket" "terraform_state" {
+  bucket = "client-timesheet-terraform-state-${local.account_id}"
+
+  # Set to false to allow destruction - change to true for production
+  force_destroy = var.allow_destroy
+
+  tags = merge(local.tags, {
+    Name = "Terraform State Bucket"
+  })
 }
 
 resource "aws_s3_bucket_versioning" "terraform_state" {
@@ -35,6 +45,155 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+# =============================================================================
+# GitHub Actions OIDC Provider and Deployment Role (Least Privilege)
+# =============================================================================
+
+# OIDC Provider for GitHub Actions
+resource "aws_iam_openid_connect_provider" "github_actions" {
+  url = "https://token.actions.githubusercontent.com"
+
+  client_id_list = ["sts.amazonaws.com"]
+
+  # GitHub's OIDC thumbprint
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+
+  tags = merge(local.tags, {
+    Name = "GitHub Actions OIDC Provider"
+  })
+}
+
+# IAM Role for GitHub Actions CD Pipeline (Least Privilege)
+resource "aws_iam_role" "github_actions_deploy" {
+  name = "client-timesheet-github-actions-deploy"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github_actions.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.tags, {
+    Name = "GitHub Actions Deploy Role"
+  })
+}
+
+# ECR Push/Pull Policy (scoped to specific repository)
+resource "aws_iam_role_policy" "github_actions_ecr" {
+  name = "ecr-push-pull"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ECRGetAuthToken"
+        Effect = "Allow"
+        Action = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPushPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
+        ]
+        Resource = aws_ecr_repository.app.arn
+      }
+    ]
+  })
+}
+
+# EC2 Describe Policy (for getting instance ID by tag)
+resource "aws_iam_role_policy" "github_actions_ec2" {
+  name = "ec2-describe"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EC2DescribeInstances"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/Project" = "client-timesheet-app"
+          }
+        }
+      },
+      {
+        Sid    = "EC2DescribeAll"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# SSM Send Command Policy (for deployment via Systems Manager)
+resource "aws_iam_role_policy" "github_actions_ssm" {
+  name = "ssm-send-command"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SSMSendCommand"
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand"
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript",
+          "arn:aws:ec2:${var.aws_region}:${local.account_id}:instance/*"
+        ]
+        Condition = {
+          StringEquals = {
+            "ssm:resourceTag/Project" = "client-timesheet-app"
+          }
+        }
+      },
+      {
+        Sid    = "SSMGetCommandInvocation"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetCommandInvocation"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
@@ -66,26 +225,27 @@ resource "aws_dynamodb_table" "terraform_locks" {
     type = "S"
   }
 
-  tags = {
-    Name        = "Terraform Lock Table"
-    Environment = "shared"
-    Project     = "client-timesheet-app"
-  }
+  tags = merge(local.tags, {
+    Name = "Terraform Lock Table"
+  })
 }
+
+# =============================================================================
+# ECR Repository
+# =============================================================================
 
 resource "aws_ecr_repository" "app" {
   name                 = "client-timesheet-app"
   image_tag_mutability = "MUTABLE"
+  force_delete         = var.allow_destroy
 
   image_scanning_configuration {
     scan_on_push = true
   }
 
-  tags = {
-    Name        = "Client Timesheet App"
-    Environment = "shared"
-    Project     = "client-timesheet-app"
-  }
+  tags = merge(local.tags, {
+    Name = "Client Timesheet App ECR"
+  })
 }
 
 resource "aws_ecr_lifecycle_policy" "app" {

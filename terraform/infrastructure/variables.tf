@@ -16,13 +16,13 @@ variable "instance_type" {
   default     = "t3.micro"
 }
 
-variable "ssh_public_key" {
-  description = "SSH public key for EC2 access"
+variable "ecr_repository_url" {
+  description = "ECR repository URL for the application"
   type        = string
 }
 
-variable "ecr_repository_url" {
-  description = "ECR repository URL for the application"
+variable "ecr_repository_arn" {
+  description = "ECR repository ARN for IAM policy scoping"
   type        = string
 }
 

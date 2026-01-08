@@ -22,3 +22,13 @@ output "aws_account_id" {
   description = "AWS Account ID"
   value       = data.aws_caller_identity.current.account_id
 }
+
+output "github_actions_role_arn" {
+  description = "IAM Role ARN for GitHub Actions to assume via OIDC"
+  value       = aws_iam_role.github_actions_deploy.arn
+}
+
+output "github_actions_oidc_provider_arn" {
+  description = "GitHub Actions OIDC Provider ARN"
+  value       = aws_iam_openid_connect_provider.github_actions.arn
+}
