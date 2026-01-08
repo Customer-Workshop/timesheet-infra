@@ -17,6 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Security middleware with CSP configured for React SPA
+// Note: HSTS and upgrade-insecure-requests disabled since we serve HTTP without SSL
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -27,7 +28,11 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "blob:"],
       connectSrc: ["'self'"],
     },
+    useDefaults: false,
   },
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "unsafe-none" },
+  strictTransportSecurity: false,
 }));
 
 // CORS configuration - in production, same origin so allow all
