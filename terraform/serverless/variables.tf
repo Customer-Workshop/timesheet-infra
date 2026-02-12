@@ -49,5 +49,5 @@ variable "sonarqube_cpu" {
 variable "sonarqube_memory" {
   description = "Fargate memory in MB for SonarQube"
   type        = number
-  default     = 1024
+  default     = 2048
 }
