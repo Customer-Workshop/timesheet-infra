@@ -196,6 +196,128 @@ resource "aws_iam_role_policy" "github_actions_ssm" {
   })
 }
 
+# Lambda deployment permissions
+resource "aws_iam_role_policy" "github_actions_lambda" {
+  name = "lambda-deploy"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaUpdateCode"
+        Effect = "Allow"
+        Action = [
+          "lambda:UpdateFunctionCode",
+          "lambda:GetFunction",
+          "lambda:GetFunctionConfiguration"
+        ]
+        Resource = "arn:aws:lambda:${var.aws_region}:${local.account_id}:function:client-timesheet-app-*"
+      }
+    ]
+  })
+}
+
+# S3 frontend deployment permissions
+resource "aws_iam_role_policy" "github_actions_s3" {
+  name = "s3-frontend-deploy"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "S3FrontendDeploy"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::client-timesheet-app-frontend-${local.account_id}",
+          "arn:aws:s3:::client-timesheet-app-frontend-${local.account_id}/*"
+        ]
+      },
+      {
+        Sid    = "TerraformStateAccess"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.terraform_state.arn,
+          "${aws_s3_bucket.terraform_state.arn}/*"
+        ]
+      },
+      {
+        Sid    = "DynamoDBStateLock"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem"
+        ]
+        Resource = aws_dynamodb_table.terraform_locks.arn
+      }
+    ]
+  })
+}
+
+# ECS/SonarQube permissions
+resource "aws_iam_role_policy" "github_actions_ecs" {
+  name = "ecs-sonarqube"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ECSDescribe"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:DescribeTasks",
+          "ecs:ListTasks",
+          "ecs:UpdateService"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ecs:cluster" = "arn:aws:ecs:${var.aws_region}:${local.account_id}:cluster/client-timesheet-app-sonarqube"
+          }
+        }
+      },
+      {
+        Sid    = "ECSClusterAccess"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:DescribeTasks",
+          "ecs:ListTasks",
+          "ecs:UpdateService"
+        ]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${local.account_id}:cluster/client-timesheet-app-sonarqube",
+          "arn:aws:ecs:${var.aws_region}:${local.account_id}:service/client-timesheet-app-sonarqube/*",
+          "arn:aws:ecs:${var.aws_region}:${local.account_id}:task/client-timesheet-app-sonarqube/*"
+        ]
+      },
+      {
+        Sid    = "EC2DescribeNetworkInterfaces"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeNetworkInterfaces"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
