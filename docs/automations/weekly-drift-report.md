@@ -15,7 +15,7 @@ automation does *here*.
 (schema: `timesheet-app/docs/automations/remediation-queue.schema.json`):
 
 ```bash
-python3 scripts/drift_scan.py --out /tmp/drift-infra.json
+python3 scripts/drift_scan.py --out drift-infra.json
 python3 scripts/drift_scan.py --terraform-dir terraform   # default
 ```
 

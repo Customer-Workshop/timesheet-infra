@@ -50,8 +50,8 @@ def resolve_within(base, *parts):
 
 
 def output_bases():
-    """Directories --out may write into: the working tree and the temp directories."""
-    candidates = [os.getcwd(), tempfile.gettempdir(), "/tmp"]
+    """Directories --out may write into: the working tree and the platform temp directory."""
+    candidates = [os.getcwd(), tempfile.gettempdir()]
     return tuple(sorted({os.path.realpath(c) for c in candidates if os.path.isdir(c)}))
 
 
