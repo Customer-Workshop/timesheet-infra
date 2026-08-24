@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -39,6 +40,28 @@ ADVISORY_COVERAGE = (
 EXPOSURE_POINTS = {"provider": 12, "module": 8, "runtime_platform": 12}
 # Providers/modules that touch live account state, so an upgrade needs a plan review.
 HIGH_BLAST_RADIUS = {"hashicorp/aws", "terraform"}
+
+
+def resolve_within(base, *parts):
+    """Path under base, or None when the joined path escapes it (--root is user input)."""
+    base = os.path.realpath(base)
+    candidate = os.path.realpath(os.path.join(base, *parts))
+    return candidate if candidate == base or candidate.startswith(base + os.sep) else None
+
+
+def output_bases():
+    """Directories --out may write into: the working tree and the temp directories."""
+    candidates = [os.getcwd(), tempfile.gettempdir(), "/tmp"]
+    return tuple(sorted({os.path.realpath(c) for c in candidates if os.path.isdir(c)}))
+
+
+def resolve_output(path):
+    """--out is user input, so it is validated against output_bases() before opening."""
+    candidate = os.path.realpath(path)
+    bases = output_bases()
+    if any(candidate.startswith(base + os.sep) for base in bases):
+        return candidate
+    raise SystemExit(f"--out must be inside one of {', '.join(bases)}: {path}")
 
 
 def http_json(url, timeout=30):
@@ -299,10 +322,10 @@ def main():
                         help="directory (relative to --root) holding the Terraform roots")
     args = parser.parse_args()
 
-    root = os.path.abspath(args.root)
-    base = os.path.join(root, args.terraform_dir)
+    root = os.path.realpath(args.root)
+    base = resolve_within(root, args.terraform_dir)
     errors = []
-    if not os.path.isdir(base):
+    if not base or not os.path.isdir(base):
         errors.append(f"{args.terraform_dir} not found under {root}")
         roots = []
     else:
@@ -334,7 +357,7 @@ def main():
     }
     payload = json.dumps(document, indent=2)
     if args.out:
-        with open(args.out, "w") as handle:
+        with open(resolve_output(args.out), "w") as handle:
             handle.write(payload + "\n")
     else:
         print(payload)
